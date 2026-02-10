@@ -1,0 +1,20 @@
+# AWS Configuration
+aws_region = "us-east-1"
+
+# Project Configuration
+project_name = "ecs-microservices"
+environment  = "dev"
+
+# Network Configuration
+vpc_cidr           = "10.0.0.0/16"
+availability_zones = ["us-east-1a", "us-east-1b"]
+
+# Domain and SSL
+domain_name     = "yourdomain.com"
+certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/your-certificate-id"
+
+# ECS Configuration
+container_insights_enabled = true
+desired_count              = 2
+cpu                        = "256"
+memory                     = "512"

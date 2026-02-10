@@ -1,0 +1,145 @@
+name: Deploy Microservice to ECS
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'services/**'
+  workflow_dispatch:
+    inputs:
+      service:
+        description: 'Service to deploy'
+        required: true
+        type: choice
+        options:
+          - users-service
+          - products-service
+          - orders-service
+          - payments-service
+          - notifications-service
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.filter.outputs.changes }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v2
+        id: filter
+        with:
+          filters: |
+            users-service:
+              - 'services/users-service/**'
+            products-service:
+              - 'services/products-service/**'
+            orders-service:
+              - 'services/orders-service/**'
+            payments-service:
+              - 'services/payments-service/**'
+            notifications-service:
+              - 'services/notifications-service/**'
+
+  build-and-deploy:
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.services != '[]' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: ${{ github.event_name == 'workflow_dispatch' && fromJson(format('["{0}"]', github.event.inputs.service)) || fromJson(needs.detect-changes.outputs.services) }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.ECR_REGISTRY }}/ecs-microservices/${{ matrix.service }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/${{ matrix.service }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            VCS_REF=${{ github.sha }}
+
+      - name: Download task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition ecs-microservices-${{ github.event.inputs.environment || 'dev' }}-${{ matrix.service }} \
+            --query taskDefinition > task-definition.json
+
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: ${{ matrix.service }}
+          image: ${{ env.ECR_REGISTRY }}/ecs-microservices/${{ matrix.service }}:${{ github.sha }}
+
+      - name: Deploy Amazon ECS task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ecs-microservices-${{ github.event.inputs.environment || 'dev' }}-${{ matrix.service }}
+          cluster: ecs-microservices-${{ github.event.inputs.environment || 'dev' }}-cluster
+          wait-for-service-stability: true
+
+      - name: Verify deployment
+        run: |
+          echo "Deployment completed for ${{ matrix.service }}"
+          aws ecs describe-services \
+            --cluster ecs-microservices-${{ github.event.inputs.environment || 'dev' }}-cluster \
+            --services ecs-microservices-${{ github.event.inputs.environment || 'dev' }}-${{ matrix.service }} \
+            --query 'services[0].deployments' \
+            --output table
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "Deployment failed for ${{ matrix.service }}"
+          # Add your notification logic here (Slack, Email, etc.)

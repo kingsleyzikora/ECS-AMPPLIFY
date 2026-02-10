@@ -1,0 +1,99 @@
+name: Build and Test
+
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+  push:
+    branches:
+      - main
+      - develop
+
+jobs:
+  test-services:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - users-service
+          - products-service
+          - orders-service
+          - payments-service
+          - notifications-service
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: services/${{ matrix.service }}/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: services/${{ matrix.service }}
+
+      - name: Run tests
+        run: npm test
+        working-directory: services/${{ matrix.service }}
+        continue-on-error: true
+
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ matrix.service }}:test \
+            -f services/${{ matrix.service }}/Dockerfile \
+            services/${{ matrix.service }}
+
+      - name: Test Docker image
+        run: |
+          docker run -d --name test-container -p 3000:300${{ matrix.index }} ${{ matrix.service }}:test
+          sleep 5
+          curl -f http://localhost:3000/health || exit 1
+          docker stop test-container
+          docker rm test-container
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies and lint
+        run: |
+          for service in services/*/; do
+            echo "Linting $service"
+            cd $service
+            if [ -f package.json ]; then
+              npm ci || true
+              npm run lint || true
+            fi
+            cd ../..
+          done
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'

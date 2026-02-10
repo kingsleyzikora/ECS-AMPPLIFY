@@ -1,0 +1,72 @@
+name: Terraform Apply
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'terraform/**'
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  TF_VERSION: 1.6.0
+
+jobs:
+  terraform-apply:
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: ./terraform
+
+      - name: Terraform Plan
+        run: |
+          terraform plan -no-color -input=false \
+            -var-file=terraform.tfvars \
+            -out=tfplan
+        working-directory: ./terraform
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve -input=false tfplan
+        working-directory: ./terraform
+
+      - name: Terraform Output
+        id: output
+        run: terraform output -json > terraform-outputs.json
+        working-directory: ./terraform
+
+      - name: Upload Terraform Outputs
+        uses: actions/upload-artifact@v3
+        with:
+          name: terraform-outputs
+          path: terraform/terraform-outputs.json
+
+      - name: Display Important Outputs
+        run: |
+          echo "### Deployment Complete! 🚀" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**ALB DNS:** $(terraform output -raw alb_dns_name)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**ECS Cluster:** $(terraform output -raw ecs_cluster_name)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**ECR Repositories:**" >> $GITHUB_STEP_SUMMARY
+          terraform output -json ecr_repository_urls | jq -r 'to_entries[] | "- \(.key): \(.value)"' >> $GITHUB_STEP_SUMMARY
+        working-directory: ./terraform
