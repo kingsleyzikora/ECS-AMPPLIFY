@@ -54,7 +54,7 @@ jobs:
         working-directory: ./terraform
 
       - name: Upload Terraform Outputs
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v6
         with:
           name: terraform-outputs
           path: terraform/terraform-outputs.json
